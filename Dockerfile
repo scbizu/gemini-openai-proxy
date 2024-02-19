@@ -1,5 +1,7 @@
 FROM golang:1.21.1 AS builder
 
+LABEL org.opencontainers.image.source https://github.com/scbizu/gemini-openai-proxy
+
 COPY ./ /app
 WORKDIR /app
 
