@@ -11,7 +11,7 @@ import (
 
 func main() {
 	// Define a flag for the port
-	port := flag.Int("port", 8080, "Port to listen on")
+	port := flag.Int("port", 8082, "Port to listen on")
 	flag.Parse()
 
 	// Create a new Gin router

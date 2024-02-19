@@ -65,7 +65,7 @@ func ChatProxyHandler(c *gin.Context) {
 		return
 	}
 
-	var req = &adapter.ChatCompletionRequest{}
+	req := &adapter.ChatCompletionRequest{}
 	// Bind the JSON data from the request to the struct
 	if err := c.ShouldBindJSON(req); err != nil {
 		c.JSON(http.StatusBadRequest, openai.APIError{
@@ -76,7 +76,11 @@ func ChatProxyHandler(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
-	client, err := genai.NewClient(ctx, option.WithAPIKey(openaiAPIKey))
+	ct := &CustomizedTransport{
+		apiKey:      openaiAPIKey,
+		tlsProxyURL: "http://127.0.0.1:1087",
+	}
+	client, err := genai.NewClient(ctx, option.WithHTTPClient(&http.Client{Transport: ct}))
 	if err != nil {
 		log.Printf("new genai client error %v\n", err)
 		c.JSON(http.StatusBadRequest, openai.APIError{
