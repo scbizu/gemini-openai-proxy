@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/generative-ai-go/genai"
@@ -13,6 +14,21 @@ import (
 
 	"github.com/zhu327/gemini-openai-proxy/pkg/adapter"
 )
+
+// MustReadCredentials reads the credentials from the environment variable or the credentials.json file
+// It is always required by Gemini OAuth2.0
+// See more at https://ai.google.dev/gemini-api/docs/oauth
+func MustReadCredentials() []byte {
+	envc := os.Getenv("GEMINI_CREDENTIALS")
+	if envc == "" {
+		data, err := os.ReadFile("credentials.json")
+		if err != nil {
+			log.Fatalf("read credentials err: %v\n", err)
+		}
+		return data
+	}
+	return []byte(envc)
+}
 
 func IndexHandler(c *gin.Context) {
 	c.JSON(http.StatusMisdirectedRequest, gin.H{
@@ -78,9 +94,12 @@ func ChatProxyHandler(c *gin.Context) {
 	ctx := c.Request.Context()
 	ct := &CustomizedTransport{
 		apiKey:      openaiAPIKey,
-		tlsProxyURL: "http://127.0.0.1:1087",
+		tlsProxyURL: "http://localhost:1087",
 	}
-	client, err := genai.NewClient(ctx, option.WithHTTPClient(&http.Client{Transport: ct}))
+	client, err := genai.NewClient(ctx,
+		option.WithHTTPClient(&http.Client{Transport: ct}),
+		option.WithCredentialsJSON(MustReadCredentials()),
+	)
 	if err != nil {
 		log.Printf("new genai client error %v\n", err)
 		c.JSON(http.StatusBadRequest, openai.APIError{
