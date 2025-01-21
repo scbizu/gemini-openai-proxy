@@ -1,6 +1,6 @@
 module github.com/zhu327/gemini-openai-proxy
 
-go 1.21.1
+go 1.23.3
 
 require (
 	github.com/gin-contrib/cors v1.5.0

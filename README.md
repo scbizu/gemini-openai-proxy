@@ -30,12 +30,12 @@ go build -o gemini main.go
 
 We recommend deploying Gemini-OpenAI-Proxy using Docker for a straightforward setup. Follow these steps to deploy with Docker:
 
+> if you don't know how to get the credentials.json file, please refer to the [Google AI Studio API documentation](https://developers.google.com/workspace/guides/create-credentials) to obtain the credentials.
+
 ```bash
-docker run --restart=always -it -d -p 8080:8080 --name gemini zhu327/gemini-openai-proxy:latest
+EXPORT export GEMINI_CREDENTIALS=$(cat credentials.json)
+docker run -e GEMINI_CREDENTIALS="$GEMINI_CREDENTIALS" --restart=always -it -d -p 8080:8080 --name gemini ghcr.io/scbizu/gemini-openai-proxy:latest
 ```
-
-Adjust the port mapping (e.g., `-p 8080:8080`) as needed, and ensure that the Docker image version (`zhu327/gemini-openai-proxy:latest`) aligns with your requirements.
-
 ---
 
 ## Usage
