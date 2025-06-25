@@ -4,20 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"log"
 	"net/http"
 	"time"
 
-	"github.com/google/generative-ai-go/genai"
 	"github.com/pkg/errors"
 	openai "github.com/sashabaranov/go-openai"
 	"google.golang.org/api/iterator"
+	"google.golang.org/genai"
 
 	"github.com/zhu327/gemini-openai-proxy/pkg/util"
 )
 
 const (
-	GeminiPro       = "gemini-2.5-pro"
+	GeminiPro       = "gemini-2.5-flash-lite-preview-06-17"
 	GeminiProVision = "gemini-pro-vision"
 
 	genaiRoleUser  = "user"
@@ -43,13 +44,18 @@ func (g *GeminiProAdapter) GenerateContent(
 	ctx context.Context,
 	req *ChatCompletionRequest,
 ) (*openai.ChatCompletionResponse, error) {
-	model := g.client.GenerativeModel(GeminiPro)
-	setGenaiModelByOpenaiRequest(model, req)
+	cfg := &genai.GenerateContentConfig{}
+	setGenaiModelByOpenaiRequest(cfg, req)
 
-	cs := model.StartChat()
-	setGenaiChatByOpenaiRequest(cs, req)
+	var history []*genai.Content
+	history = setChatHistory(history, req)
 
-	prompt := genai.Text(req.Messages[len(req.Messages)-1].StringContent())
+	cs, err := g.client.Chats.Create(ctx, GeminiPro, cfg, history)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: chat: %q", err)
+	}
+
+	prompt := genai.Part{Text: req.Messages[len(req.Messages)-1].StringContent()}
 	genaiResp, err := cs.SendMessage(ctx, prompt)
 	if err != nil {
 		return nil, errors.Wrap(err, "genai send message error")
@@ -63,13 +69,19 @@ func (g *GeminiProAdapter) GenerateStreamContent(
 	ctx context.Context,
 	req *ChatCompletionRequest,
 ) (<-chan string, error) {
-	model := g.client.GenerativeModel(GeminiPro)
-	setGenaiModelByOpenaiRequest(model, req)
+	cfg := &genai.GenerateContentConfig{}
+	setGenaiModelByOpenaiRequest(cfg, req)
+	var history []*genai.Content
+	history = setChatHistory(history, req)
 
-	cs := model.StartChat()
-	setGenaiChatByOpenaiRequest(cs, req)
+	cs, err := g.client.Chats.Create(ctx, GeminiPro, cfg, history)
+	if err != nil {
+		return nil, fmt.Errorf("gemini: create: %w", err)
+	}
 
-	prompt := genai.Text(req.Messages[len(req.Messages)-1].StringContent())
+	prompt := genai.Part{
+		Text: req.Messages[len(req.Messages)-1].StringContent(),
+	}
 	iter := cs.SendMessageStream(ctx, prompt)
 
 	dataChan := make(chan string)
@@ -92,8 +104,8 @@ func (g *GeminiProVisionAdapter) GenerateContent(
 	ctx context.Context,
 	req *ChatCompletionRequest,
 ) (*openai.ChatCompletionResponse, error) {
-	model := g.client.GenerativeModel(GeminiProVision)
-	setGenaiModelByOpenaiRequest(model, req)
+	cfg := &genai.GenerateContentConfig{}
+	setGenaiModelByOpenaiRequest(cfg, req)
 
 	// NOTE: use last message as prompt, gemini pro vision does not support context
 	// https://ai.google.dev/tutorials/go_quickstart#multi-turn-conversations-chat
@@ -102,7 +114,10 @@ func (g *GeminiProVisionAdapter) GenerateContent(
 		return nil, errors.Wrap(err, "genai generate prompt error")
 	}
 
-	genaiResp, err := model.GenerateContent(ctx, prompt...)
+	genaiResp, err := g.client.Models.GenerateContent(
+		ctx, GeminiProVision, []*genai.Content{
+			prompt,
+		}, cfg)
 	if err != nil {
 		return nil, errors.Wrap(err, "genai send message error")
 	}
@@ -111,35 +126,42 @@ func (g *GeminiProVisionAdapter) GenerateContent(
 	return &openaiResp, nil
 }
 
-func (*GeminiProVisionAdapter) openaiMessageToGenaiPrompt(msg ChatCompletionMessage) ([]genai.Part, error) {
+func (*GeminiProVisionAdapter) openaiMessageToGenaiPrompt(msg ChatCompletionMessage) (*genai.Content, error) {
 	parts, err := msg.MultiContent()
 	if err != nil {
 		return nil, err
 	}
 
-	prompt := make([]genai.Part, 0, len(parts))
+	prompt := make([]*genai.Part, 0, len(parts))
 	for _, part := range parts {
 		switch part.Type {
 		case openai.ChatMessagePartTypeText:
-			prompt = append(prompt, genai.Text(part.Text))
+			prompt = append(prompt, &genai.Part{Text: part.Text})
 		case openai.ChatMessagePartTypeImageURL:
 			data, format, err := parseImageURL(part.ImageURL.URL)
 			if err != nil {
 				return nil, errors.Wrap(err, "parse image url error")
 			}
 
-			prompt = append(prompt, genai.ImageData(format, data))
+			prompt = append(prompt, &genai.Part{
+				InlineData: &genai.Blob{
+					Data:     data,
+					MIMEType: format,
+				},
+			})
 		}
 	}
-	return prompt, nil
+	return &genai.Content{
+		Parts: prompt,
+	}, nil
 }
 
 func (g *GeminiProVisionAdapter) GenerateStreamContent(
 	ctx context.Context,
 	req *ChatCompletionRequest,
 ) (<-chan string, error) {
-	model := g.client.GenerativeModel(GeminiProVision)
-	setGenaiModelByOpenaiRequest(model, req)
+	cfg := &genai.GenerateContentConfig{}
+	setGenaiModelByOpenaiRequest(cfg, req)
 
 	// NOTE: use last message as prompt, gemini pro vision does not support context
 	// https://ai.google.dev/tutorials/go_quickstart#multi-turn-conversations-chat
@@ -148,7 +170,9 @@ func (g *GeminiProVisionAdapter) GenerateStreamContent(
 		return nil, errors.Wrap(err, "genai generate prompt error")
 	}
 
-	iter := model.GenerateContentStream(ctx, prompt...)
+	iter := g.client.Models.GenerateContentStream(ctx, GeminiProVision, []*genai.Content{
+		prompt,
+	}, cfg)
 
 	dataChan := make(chan string)
 	go handleStreamIter(iter, dataChan)
@@ -156,19 +180,17 @@ func (g *GeminiProVisionAdapter) GenerateStreamContent(
 	return dataChan, nil
 }
 
-func handleStreamIter(iter *genai.GenerateContentResponseIterator, dataChan chan string) {
+func handleStreamIter(iter iter.Seq2[*genai.GenerateContentResponse, error], dataChan chan string) {
 	defer close(dataChan)
 
 	respID := util.GetUUID()
 	created := time.Now().Unix()
 
-	for {
-		genaiResp, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
-
+	for genaiResp, err := range iter {
 		if err != nil {
+			if errors.Is(err, iterator.Done) {
+				break
+			}
 			log.Printf("genai get stream message error %v\n", err)
 			apiErr := openai.APIError{
 				Code:    http.StatusInternalServerError,
@@ -206,9 +228,7 @@ func genaiResponseToStreamCompletionResponse(
 	for i, candidate := range genaiResp.Candidates {
 		var content string
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
-			if s, ok := candidate.Content.Parts[0].(genai.Text); ok {
-				content = string(s)
-			}
+			content = candidate.Content.Parts[0].Text
 		}
 
 		choice := CompletionChoice{
@@ -217,7 +237,7 @@ func genaiResponseToStreamCompletionResponse(
 		choice.Delta.Content = content
 
 		if candidate.FinishReason > genai.FinishReasonStop {
-			log.Printf("genai message finish reason %s\n", candidate.FinishReason.String())
+			log.Printf("genai message finish reason %s\n", candidate.FinishReason)
 
 			var openaiFinishReason string = string(openai.FinishReasonStop)
 			if candidate.FinishReason == genai.FinishReasonMaxTokens {
@@ -245,9 +265,7 @@ func genaiResponseToOpenaiResponse(
 	for i, candidate := range genaiResp.Candidates {
 		var content string
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
-			if s, ok := candidate.Content.Parts[0].(genai.Text); ok {
-				content = string(s)
-			}
+			content = candidate.Content.Parts[0].Text
 		}
 
 		choice := openai.ChatCompletionChoice{
@@ -263,37 +281,36 @@ func genaiResponseToOpenaiResponse(
 	return resp
 }
 
-func setGenaiChatByOpenaiRequest(cs *genai.ChatSession, req *ChatCompletionRequest) {
-	cs.History = make([]*genai.Content, 0, len(req.Messages))
+func setChatHistory(history []*genai.Content, req *ChatCompletionRequest) []*genai.Content {
 	if len(req.Messages) > 1 {
 		for _, message := range req.Messages[:len(req.Messages)-1] {
 			switch message.Role {
 			case openai.ChatMessageRoleSystem:
-				cs.History = append(cs.History, []*genai.Content{
+				history = append(history, []*genai.Content{
 					{
-						Parts: []genai.Part{
-							genai.Text(message.StringContent()),
+						Parts: []*genai.Part{
+							{Text: message.StringContent()},
 						},
 						Role: genaiRoleUser,
 					},
 					{
-						Parts: []genai.Part{
-							genai.Text("ok."),
+						Parts: []*genai.Part{
+							{Text: "ok."},
 						},
 						Role: genaiRoleModel,
 					},
 				}...)
 			case openai.ChatMessageRoleAssistant:
-				cs.History = append(cs.History, &genai.Content{
-					Parts: []genai.Part{
-						genai.Text(message.StringContent()),
+				history = append(history, &genai.Content{
+					Parts: []*genai.Part{
+						{Text: message.StringContent()},
 					},
 					Role: genaiRoleModel,
 				})
 			case openai.ChatMessageRoleUser:
-				cs.History = append(cs.History, &genai.Content{
-					Parts: []genai.Part{
-						genai.Text(message.StringContent()),
+				history = append(history, &genai.Content{
+					Parts: []*genai.Part{
+						{Text: message.StringContent()},
 					},
 					Role: genaiRoleUser,
 				})
@@ -301,42 +318,44 @@ func setGenaiChatByOpenaiRequest(cs *genai.ChatSession, req *ChatCompletionReque
 		}
 	}
 
-	if len(cs.History) != 0 && cs.History[len(cs.History)-1].Role != genaiRoleModel {
-		cs.History = append(cs.History, &genai.Content{
-			Parts: []genai.Part{
-				genai.Text("ok."),
+	if len(history) != 0 && history[len(history)-1].Role != genaiRoleModel {
+		history = append(history, &genai.Content{
+			Parts: []*genai.Part{
+				{Text: "ok."},
 			},
 			Role: genaiRoleModel,
 		})
 	}
+
+	return history
 }
 
-func setGenaiModelByOpenaiRequest(model *genai.GenerativeModel, req *ChatCompletionRequest) {
+func setGenaiModelByOpenaiRequest(cfg *genai.GenerateContentConfig, req *ChatCompletionRequest) {
 	if req.MaxTokens != 0 {
-		model.MaxOutputTokens = &req.MaxTokens
+		cfg.MaxOutputTokens = req.MaxTokens
 	}
 	if req.Temperature != 0 {
-		model.Temperature = &req.Temperature
+		cfg.Temperature = &req.Temperature
 	}
 	if req.TopP != 0 {
-		model.TopP = &req.TopP
+		cfg.TopP = &req.TopP
 	}
-	model.SafetySettings = []*genai.SafetySetting{
+	cfg.SafetySettings = []*genai.SafetySetting{
 		{
 			Category:  genai.HarmCategoryHarassment,
-			Threshold: genai.HarmBlockNone,
+			Threshold: genai.HarmBlockThresholdBlockNone,
 		},
 		{
 			Category:  genai.HarmCategoryHateSpeech,
-			Threshold: genai.HarmBlockNone,
+			Threshold: genai.HarmBlockThresholdBlockNone,
 		},
 		{
 			Category:  genai.HarmCategorySexuallyExplicit,
-			Threshold: genai.HarmBlockNone,
+			Threshold: genai.HarmBlockThresholdBlockNone,
 		},
 		{
 			Category:  genai.HarmCategoryDangerousContent,
-			Threshold: genai.HarmBlockNone,
+			Threshold: genai.HarmBlockThresholdBlockNone,
 		},
 	}
 }

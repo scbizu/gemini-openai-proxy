@@ -1,4 +1,4 @@
-FROM golang:1.23.3 AS builder
+FROM golang:1.24.0 AS builder
 
 LABEL org.opencontainers.image.source=https://github.com/scbizu/gemini-openai-proxy
 

@@ -24,4 +24,4 @@ go.work
 gemini
 
 # credentials
-credentials.json
+.key

@@ -3,32 +3,16 @@ package api
 import (
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/generative-ai-go/genai"
 	openai "github.com/sashabaranov/go-openai"
-	"google.golang.org/api/option"
+	"google.golang.org/genai"
 
 	"github.com/zhu327/gemini-openai-proxy/pkg/adapter"
 )
-
-// MustReadCredentials reads the credentials from the environment variable or the credentials.json file
-// It is always required by Gemini OAuth2.0
-// See more at https://ai.google.dev/gemini-api/docs/oauth
-func MustReadCredentials() []byte {
-	envc := os.Getenv("GEMINI_CREDENTIALS")
-	if envc == "" {
-		data, err := os.ReadFile("credentials.json")
-		if err != nil {
-			log.Fatalf("read credentials err: %v\n", err)
-		}
-		return data
-	}
-	return []byte(envc)
-}
 
 func IndexHandler(c *gin.Context) {
 	c.JSON(http.StatusMisdirectedRequest, gin.H{
@@ -96,19 +80,20 @@ func ChatProxyHandler(c *gin.Context) {
 		apiKey:      openaiAPIKey,
 		tlsProxyURL: "http://localhost:1087",
 	}
-	client, err := genai.NewClient(ctx,
-		option.WithHTTPClient(&http.Client{Transport: ct}),
-		option.WithCredentialsJSON(MustReadCredentials()),
-	)
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		HTTPClient: &http.Client{
+			Transport: ct,
+		},
+		APIKey: os.Getenv("GEMINI_API_KEY"),
+	})
 	if err != nil {
-		log.Printf("new genai client error %v\n", err)
+		slog.Error("genai client", "error", err)
 		c.JSON(http.StatusBadRequest, openai.APIError{
 			Code:    http.StatusBadRequest,
 			Message: err.Error(),
 		})
 		return
 	}
-	defer client.Close()
 
 	var gemini adapter.GenaiModelAdapter
 	switch req.Model {
@@ -121,7 +106,7 @@ func ChatProxyHandler(c *gin.Context) {
 	if !req.Stream {
 		resp, err := gemini.GenerateContent(ctx, req)
 		if err != nil {
-			log.Printf("genai generate content error %v\n", err)
+			slog.Error("genai generate content", "error", err)
 			c.JSON(http.StatusBadRequest, openai.APIError{
 				Code:    http.StatusBadRequest,
 				Message: err.Error(),
@@ -135,7 +120,7 @@ func ChatProxyHandler(c *gin.Context) {
 
 	dataChan, err := gemini.GenerateStreamContent(ctx, req)
 	if err != nil {
-		log.Printf("genai generate content error %v\n", err)
+		slog.Error("genai generate content", "error", err)
 		c.JSON(http.StatusBadRequest, openai.APIError{
 			Code:    http.StatusBadRequest,
 			Message: err.Error(),
